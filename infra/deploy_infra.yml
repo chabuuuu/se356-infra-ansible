@@ -1,0 +1,143 @@
+---
+- name: Deploy and manage Docker Compose infrastructure
+  hosts: all
+  become: true
+  vars:
+    project_folders:
+      - "{{ group_names[0] }}"
+    base_local_path: "{{ playbook_dir }}"
+
+  tasks:
+    - name: Check for .env files in local project folders
+      ansible.builtin.find:
+        paths: "{{ base_local_path }}/{{ item }}"
+        patterns: ".env"
+        recurse: true
+      loop: "{{ project_folders }}"
+      register: local_env_files
+
+    - name: Fail if any .env file exists in local project folders
+      ansible.builtin.fail:
+        msg: |
+          Found .env file(s) in local project folders:
+          {% for result in local_env_files.results %}
+            {% for file in result.files %}
+              - {{ file.path }}
+            {% endfor %}
+          {% endfor %}
+          Please remove or rename these .env files before deploying!
+      when: local_env_files.results | map(attribute='files') | sum(start=[]) | length > 0
+
+    - name: Ensure docker service is running
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Ensure base remote folders exist
+      ansible.builtin.file:
+        path: "{{ base_remote_path }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: "{{ project_folders }}"
+
+    - name: Synchronize project folders to server (preserve structure)
+      ansible.posix.synchronize:
+        src: "{{ base_local_path }}/{{ item }}/"
+        dest: "{{ base_remote_path }}/{{ item }}/"
+        recursive: true
+        delete: false
+      loop: "{{ project_folders }}"
+      register: sync_results
+
+    - name: Find all docker-compose files on remote after sync
+      ansible.builtin.find:
+        paths: "{{ base_remote_path }}/{{ item }}"
+        patterns: "*docker-compose*.yml,*docker-compose*.yaml"
+        recurse: true
+      loop: "{{ project_folders }}"
+      register: all_compose_files
+
+    - name: Start or update all docker-compose projects found
+      ansible.builtin.shell: |
+        docker compose -f {{ item.path }} up -d --remove-orphans
+        docker compose -f {{ item.path }} ps
+      args:
+        chdir: "{{ item.path | dirname }}"
+      loop: "{{ all_compose_files.results | map(attribute='files') | sum(start=[]) }}"
+      when: all_compose_files is defined and (all_compose_files.results | map(attribute='files') | sum(start=[])) | length > 0
+      changed_when: true
+      register: compose_up_result
+      ignore_errors: true
+
+    - name: Show docker compose up output
+      ansible.builtin.debug:
+        msg: "{{ item.stdout }}"
+      loop: "{{ compose_up_result.results | default([]) }}"
+      when: compose_up_result is defined
+
+    - name: Check container status and restart if needed (all discovered compose files)
+      ansible.builtin.shell: |
+        exited_svcs=$(docker compose -f {{ item.path }} ps --services --filter "status=exited")
+        if [ -n "$exited_svcs" ]; then
+          echo "$exited_svcs" | xargs -r docker compose -f {{ item.path }} restart
+        fi
+      args:
+        chdir: "{{ item.path | dirname }}"
+        executable: /bin/bash
+      loop: "{{ all_compose_files.results | map(attribute='files') | sum(start=[]) }}"
+      when: all_compose_files is defined and (all_compose_files.results | map(attribute='files') | sum(start=[])) | length > 0
+      changed_when: false
+      tags: skip_ansible_lint
+
+    - name: Collect container logs (all discovered compose files)
+      ansible.builtin.shell: |
+        for svc in $(docker compose -f {{ item.path }} ps --services --filter "status=running"); do
+          docker compose -f {{ item.path }} logs $svc > {{ item.path | dirname }}/$svc.log 2>&1
+        done
+      args:
+        chdir: "{{ item.path | dirname }}"
+      loop: "{{ all_compose_files.results | map(attribute='files') | sum(start=[]) }}"
+      when: all_compose_files is defined and (all_compose_files.results | map(attribute='files') | sum(start=[])) | length > 0
+      changed_when: false
+
+    - name: List all running containers on server
+      ansible.builtin.shell: docker ps --format "table {{ '{{' }}.Names{{ '}}' }}\t{{ '{{' }}.Status{{ '}}' }}\t{{ '{{' }}.Image{{ '}}' }}"
+      register: running_containers
+      changed_when: false
+      tags: skip_ansible_lint
+
+    - name: List all running containers
+      ansible.builtin.debug:
+        msg: "{{ running_containers.stdout_lines }}"
+
+    - name: List all expected services (from docker-compose files)
+      ansible.builtin.shell: |
+        for f in $(find {{ base_remote_path }}/{{ group_names[0] }} -type f -name "*docker-compose*.yml" -o -name "*docker-compose*.yaml"); do
+          echo "File: $f"
+          docker compose -f $f config --services
+        done
+      register: expected_services
+      changed_when: false
+
+    - name: List all expected services
+      ansible.builtin.debug:
+        msg: "{{ expected_services.stdout_lines }}"
+
+    - name: List all services that are not running (compared to expected)
+      ansible.builtin.shell: |
+        running=$(docker ps --format '{{'{{.Names}}'}}')
+        for f in $(find {{ base_remote_path }}/{{ group_names[0] }} -type f -name "*docker-compose*.yml" -o -name "*docker-compose*.yaml"); do
+          for svc in $(docker compose -f $f config --services); do
+            if ! echo "$running" | grep -qw "$svc"; then
+              echo "Service $svc (in $f) is not running"
+            fi
+          done
+        done
+      register: not_running_services
+      changed_when: false
+      tags: skip_ansible_lint
+
+    - name: List all services that are not running
+      ansible.builtin.debug:
+        msg: "{{ not_running_services.stdout_lines }}"

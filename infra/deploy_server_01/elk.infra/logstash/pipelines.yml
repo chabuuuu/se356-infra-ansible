@@ -1,0 +1,5 @@
+- pipeline.id: prod_pipeline
+  path.config: "/etc/logstash/conf.d/vmm_b2c_prod_logging.conf"
+
+- pipeline.id: staging_pipeline
+  path.config: "/etc/logstash/conf.d/vmm_b2c_staging_logging.conf"

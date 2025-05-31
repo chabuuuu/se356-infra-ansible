@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  elasticsearch:
+    container_name: elasticsearch
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.5.3
+    env_file:
+      - .env
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - bootstrap.memory_lock=true
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - http.cors.enabled=true
+      - http.cors.allow-origin="*"
+      - http.cors.allow-headers=Authorization,X-Requested-With,Content-Type,Content-Length
+      - http.cors.allow-methods=OPTIONS,HEAD,GET,POST,PUT,DELETE
+      - ELASTIC_PASSWORD=${ELASTICSEARCH_PASSWORD}
+    ports:
+      - "127.0.0.1:9200:9200"
+      - "127.0.0.1:9320:9300"
+    volumes:
+      - elasticvolume:/usr/share/elasticsearch/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -f -u elastic:${ELASTICSEARCH_PASSWORD} http://localhost:9200 || exit 1",
+        ]
+      interval: 10s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+    networks:
+      - elk-main-network
+    restart: always
+
+  logstash:
+    container_name: logstash
+    build:
+      context: ./logstash/
+      dockerfile: Dockerfile
+    ports:
+      - "5564:5564"
+      - "5562:5562"
+    env_file:
+      - .env
+    environment:
+      - CONFIG_SUPPORT_ESCAPE=true
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - ELASTICSEARCH_USER=elastic
+      - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
+
+    depends_on:
+      - elasticsearch
+    volumes:
+      - logstashvolume:/usr/share/logstash/data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 700M
+    networks:
+      - elk-main-network
+    restart: always
+
+  kibana:
+    container_name: kibana
+    image: docker.elastic.co/kibana/kibana:8.5.3
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    env_file:
+      - .env
+    environment:
+      SERVER_NAME: kibana.example.org
+      ELASTICSEARCH_HOSTS: '["http://elasticsearch:9200"]'
+      ELASTICSEARCH_SERVICEACCOUNTTOKEN: ${ELASTICSEARCH_SERVICEACCOUNTTOKEN}
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 500M
+    networks:
+      - elk-main-network
+    volumes:
+      - kibana_data:/usr/share/kibana/data # Persist Kibana data
+    restart: always
+
+volumes:
+  elasticvolume:
+  logstashvolume:
+  kibana_data:
+
+networks:
+  elk-main-network:
+    name: elk-main-network
+    driver: bridge

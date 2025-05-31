@@ -1,0 +1,38 @@
+# Cấu hình Prometheus
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Các quy tắc cảnh báo
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+scrape_configs:
+  - job_name: "prometheus"
+    scrape_interval: 30s
+    metrics_path: /metrics
+    scheme: http
+    tls_config:
+      insecure_skip_verify: false
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          instance: "prometheus"
+
+  - job_name: "node_exporter"
+    scrape_interval: 30s
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ["node_exporter:9100"]
+        labels:
+          instance: "deploy_server_01"
+          node: "node_deploy_server_01"
+
+  - job_name: cadvisor
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["cadvisor:8080"]
+        labels:
+          instance: "deploy_server_01"
+          node: "node_deploy_server_01"
