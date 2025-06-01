@@ -1,0 +1,2 @@
+- pipeline.id: backend_log_pipeline
+  path.config: "/etc/logstash/conf.d/se356_logging.conf"
